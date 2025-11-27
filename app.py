@@ -156,59 +156,64 @@ def login():
 @app.route('/api/giao-dich', methods=['POST'])
 @jwt_required()
 def create_transaction():
-    from ai_module import full_financial_analysis  # import AI module ở đây
-
-    user_id = int(get_jwt_identity())
-    data = request.get_json()
-    
-    # Nếu không có danh_muc_id, tự động lấy danh mục mặc định
-    danh_muc_id = data.get('danh_muc_id')
-    if not danh_muc_id:
-        loai = data.get('loai', 'chi')
-        loai_danh_muc = 'Chi tiêu' if loai == 'chi' else 'Thu nhập'
-        danh_muc = DanhMuc.query.filter_by(nguoi_dung_id=user_id, loai_danh_muc=loai_danh_muc).first()
-        if not danh_muc:
-            return jsonify({'message': 'Không tìm thấy danh mục mặc định'}), 404
-        danh_muc_id = danh_muc.id
-    else:
+    try:
+        user_id = int(get_jwt_identity())
+        data = request.get_json()
+        
+        print(f"DEBUG: Received data: {data}")  # Debug log
+        
+        # Validate input
+        if not data:
+            return jsonify({'message': 'Không có dữ liệu'}), 422
+            
+        if 'so_tien' not in data:
+            return jsonify({'message': 'Thiếu thông tin số tiền'}), 422
+        
+        if 'danh_muc_id' not in data:
+            return jsonify({'message': 'Thiếu thông tin danh mục'}), 422
+        
+        try:
+            so_tien = float(data['so_tien'])
+            if so_tien <= 0:
+                return jsonify({'message': 'Số tiền phải lớn hơn 0'}), 422
+        except (ValueError, TypeError):
+            return jsonify({'message': f'Số tiền không hợp lệ: {data.get("so_tien")}'}), 422
+        
+        try:
+            danh_muc_id = int(data['danh_muc_id'])
+        except (ValueError, TypeError):
+            return jsonify({'message': f'Danh mục ID không hợp lệ: {data.get("danh_muc_id")}'}), 422
+        
+        # Kiểm tra danh mục tồn tại
         danh_muc = DanhMuc.query.filter_by(id=danh_muc_id, nguoi_dung_id=user_id).first()
         if not danh_muc:
-            return jsonify({'message': 'Danh mục không tồn tại'}), 404
-    
-    giao_dich = GiaoDich(
-        danh_muc_id=danh_muc_id,
-        so_tien=data['so_tien'],
-        mo_ta=data.get('mo_ta', ''),
-        ngay=datetime.fromisoformat(data['ngay']) if 'ngay' in data else datetime.utcnow()
-    )
-    
-    user = NguoiDung.query.get(user_id)
-    if danh_muc.loai_danh_muc == 'Chi tiêu':
-        user.so_du -= data['so_tien']
-    else:
-        user.so_du += data['so_tien']
-    
-    db.session.add(giao_dich)
-    db.session.commit()
-    
-    # --- Gọi AI dự đoán chi tiêu sau khi thêm giao dịch ---
-    danh_mucs = DanhMuc.query.filter_by(nguoi_dung_id=user_id).all()
-    danh_muc_ids = [dm.id for dm in danh_mucs]
-    giao_dichs = GiaoDich.query.filter(GiaoDich.danh_muc_id.in_(danh_muc_ids)).all()
-    transactions_history = [{
-        'amount': g.so_tien,
-        'category': g.danh_muc_id,
-        'date': g.ngay.isoformat(),
-        'description': g.mo_ta
-    } for g in giao_dichs]
-
-    ai_result = full_financial_analysis(transactions_history)
-    
-    return jsonify({
-        'message': 'Giao dịch thành công',
-        'so_du_moi': user.so_du,
-        'ai_prediction': ai_result
-    }), 201
+            return jsonify({'message': f'Danh mục ID {danh_muc_id} không tồn tại hoặc không thuộc về bạn'}), 422
+        
+        giao_dich = GiaoDich(
+            danh_muc_id=danh_muc_id,
+            so_tien=so_tien,
+            mo_ta=data.get('mo_ta', ''),
+            ngay=datetime.utcnow()
+        )
+        
+        user = NguoiDung.query.get(user_id)
+        if danh_muc.loai_danh_muc == 'Chi tiêu':
+            user.so_du -= so_tien
+        else:
+            user.so_du += so_tien
+        
+        db.session.add(giao_dich)
+        db.session.commit()
+        
+        return jsonify({
+            'message': 'Giao dịch thành công',
+            'so_du_moi': user.so_du
+        }), 201
+        
+    except Exception as e:
+        db.session.rollback()
+        print(f"ERROR: {str(e)}")  # Debug log
+        return jsonify({'message': f'Lỗi server: {str(e)}'}), 500
 
 @app.route('/api/giao-dich', methods=['GET'])
 @jwt_required()
